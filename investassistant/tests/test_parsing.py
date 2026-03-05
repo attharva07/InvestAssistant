@@ -29,6 +29,11 @@ def test_parse_date_us_date():
     assert parsed.isoformat() == "2026-03-05T00:00:00+00:00"
 
 
+def test_parse_date_empty_raises():
+    with pytest.raises(ValueError, match="empty date"):
+        parse_date("")
+
+
 def test_parse_date_blank_raises():
     with pytest.raises(ValueError, match="empty date"):
         parse_date("   ")
