@@ -14,7 +14,7 @@ async def import_robinhood(request: Request, file: UploadFile | None = File(defa
     try:
         if file is not None:
             text = (await file.read()).decode("utf-8-sig")
-            events, mapping = parse_csv_text(text)
+            events, mapping, stats = parse_csv_text(text)
         else:
             payload = await request.json()
             filename = payload.get("filename")
@@ -25,7 +25,7 @@ async def import_robinhood(request: Request, file: UploadFile | None = File(defa
                 raise HTTPException(status_code=400, detail="Invalid file path")
             if not path.exists():
                 raise HTTPException(status_code=404, detail=f"File not found: {filename}")
-            events, mapping = load_and_parse_csv(str(path))
+            events, mapping, stats = load_and_parse_csv(str(path))
 
         records = [
             {
@@ -45,6 +45,13 @@ async def import_robinhood(request: Request, file: UploadFile | None = File(defa
         ]
         imported = insert_events(records)
         holdings_count = rebuild_holdings()
-        return {"imported_events": imported, "holdings_count": holdings_count, "detected_columns": mapping}
+        return {
+            "imported_events": imported,
+            "imported_count": imported,
+            "skipped_count": stats["skipped_count"],
+            "errors_sample": stats["errors_sample"],
+            "holdings_count": holdings_count,
+            "detected_columns": mapping,
+        }
     except MappingError as e:
         raise HTTPException(status_code=422, detail=str(e))

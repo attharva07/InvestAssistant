@@ -42,7 +42,14 @@ if page == "Import":
             data = None
 
         if data:
-            st.success(f"Imported {data['imported_events']} events. Holdings rebuilt: {data['holdings_count']} tickers")
+            imported_count = data.get("imported_count", data.get("imported_events", 0))
+            skipped_count = data.get("skipped_count", 0)
+            st.success(f"Imported: {imported_count}")
+            st.info(f"Skipped: {skipped_count}")
+            st.caption(f"Holdings rebuilt: {data['holdings_count']} tickers")
+            if data.get("errors_sample"):
+                with st.expander("Skipped row examples"):
+                    st.json(data["errors_sample"])
             st.json({"detected_columns": data.get("detected_columns", {})})
 
 elif page == "Portfolio":
