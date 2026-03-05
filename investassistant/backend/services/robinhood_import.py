@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from dateutil import parser as date_parser
+
 DATE_CANDIDATES = ["Activity Date", "Date", "Trade Date", "Process Date", "Settle Date"]
 SYMBOL_CANDIDATES = ["Symbol", "Ticker", "Instrument", "Underlying Symbol"]
 DESC_CANDIDATES = ["Description", "Activity", "Type", "Trans Code", "Action"]
@@ -89,12 +91,13 @@ def parse_date(value: str) -> datetime:
     except ValueError:
         pass
 
-    for fmt in ["%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"]:
-        try:
-            dt = datetime.strptime(text, fmt)
-            return dt.replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
+    try:
+        dt = date_parser.parse(text)
+        if not dt.tzinfo:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        pass
 
     raise ValueError(f"Unable to parse date: {value}")
 
@@ -130,32 +133,31 @@ def parse_csv_text(
         if all(not str(value or "").strip() for value in row.values()):
             continue
 
-        desc = str(row.get(mapping["description"] or "", "")).strip()
         raw_date = str(row.get(mapping["date"] or "", "")).strip()
         try:
+            desc = str(row.get(mapping["description"] or "", "")).strip()
             parsed_date = parse_date(raw_date)
-        except ValueError as e:
+            event_type = classify_event_type(desc)
+            event = ParsedEvent(
+                source=source,
+                event_type=event_type,
+                ticker=(row.get(mapping["symbol"] or "") or None),
+                quantity=parse_money(row.get(mapping["quantity"] or "")),
+                price=parse_money(row.get(mapping["price"] or "")),
+                amount=parse_money(row.get(mapping["amount"] or "")),
+                currency="USD",
+                event_ts=parsed_date.isoformat(),
+                description=desc,
+                raw_json=json.dumps(row),
+            )
+            if event.ticker:
+                event.ticker = str(event.ticker).strip().upper()
+            events.append(event)
+        except (TypeError, ValueError, KeyError) as e:
             skipped_count += 1
-            if len(errors_sample) < 5:
+            if len(errors_sample) < 10:
                 errors_sample.append({"row": row_index, "date": raw_date, "error": str(e)})
             continue
-
-        event_type = classify_event_type(desc)
-        event = ParsedEvent(
-            source=source,
-            event_type=event_type,
-            ticker=(row.get(mapping["symbol"] or "") or None),
-            quantity=parse_money(row.get(mapping["quantity"] or "")),
-            price=parse_money(row.get(mapping["price"] or "")),
-            amount=parse_money(row.get(mapping["amount"] or "")),
-            currency="USD",
-            event_ts=parsed_date.isoformat(),
-            description=desc,
-            raw_json=json.dumps(row),
-        )
-        if event.ticker:
-            event.ticker = str(event.ticker).strip().upper()
-        events.append(event)
 
     stats = {
         "imported_count": len(events),

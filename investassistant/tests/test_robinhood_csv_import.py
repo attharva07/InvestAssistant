@@ -16,4 +16,5 @@ def test_parse_csv_text_skips_blank_date_rows():
     assert len(stats["errors_sample"]) == 1
     assert stats["errors_sample"][0]["row"] == 3
     assert stats["errors_sample"][0]["date"] == ""
+    assert stats["errors_sample"][0]["error"] == "empty date"
     assert mapping["date"] == "Activity Date"

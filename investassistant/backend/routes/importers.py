@@ -47,7 +47,8 @@ async def import_robinhood(request: Request, file: UploadFile | None = File(defa
         holdings_count = rebuild_holdings()
         return {
             "imported_events": imported,
-            "imported_count": imported,
+            "imported_count": len(records),
+            "records_received": len(records),
             "skipped_count": stats["skipped_count"],
             "errors_sample": stats["errors_sample"],
             "holdings_count": holdings_count,
