@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -85,7 +85,8 @@ elif page == "Log Event":
         price = st.number_input("Price", value=0.0)
         amount = st.number_input("Amount", value=0.0)
         desc = st.text_input("Description")
-        ts = st.text_input("Timestamp ISO8601", value=datetime.utcnow().isoformat() + "Z")
+        default_ts = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        ts = st.text_input("Timestamp ISO8601", value=default_ts)
         submit = st.form_submit_button("Save")
     if submit:
         payload = {
