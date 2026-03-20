@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter
 
@@ -35,7 +35,7 @@ def generate_recommendations():
             reasons = ["No strong setup; maintain existing stance"]
 
         rec_id = create_recommendation(row["ticker"], action, confidence, reasons, follow_up_days=3)
-        follow_up_at = (datetime.utcnow() + timedelta(days=3)).isoformat() + "Z"
+        follow_up_at = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
         msg = f"You asked me to watch {row['ticker']}, it's moved since the signal. Did you act?"
         reminder_id = create_reminder(rec_id, follow_up_at, msg)
         created.append({"recommendation_id": rec_id, "reminder_id": reminder_id, "ticker": row["ticker"], "action": action})

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter
 
@@ -45,8 +45,8 @@ def daily_report():
         close = float(hist["Close"].iloc[-1])
         prev = float(hist["Close"].iloc[-2]) if len(hist) > 1 else close
         week = float(hist["Close"].iloc[-6]) if len(hist) > 5 else prev
-        chg1d = ((close - prev) / prev) * 100 if prev else None
-        chg1w = ((close - week) / week) * 100 if week else None
+        chg1d = ((close - prev) / prev) * 100 if prev != 0 else None
+        chg1w = ((close - week) / week) * 100 if week != 0 else None
         rsi = compute_rsi_14(hist)
         drawdown = drawdown_from_high(hist)
         vol = hist["Close"].pct_change().dropna().tail(20).std() if len(hist) > 20 else None
@@ -73,4 +73,4 @@ def daily_report():
         if delayed:
             warnings.append(f"{ticker} data delayed (using stale/cached data if available)")
 
-    return {"as_of": datetime.utcnow().isoformat() + "Z", "rows": rows, "warnings": warnings}
+    return {"as_of": datetime.now(timezone.utc).isoformat(), "rows": rows, "warnings": warnings}

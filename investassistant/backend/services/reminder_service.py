@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from backend.database import db_cursor
 
@@ -13,7 +13,7 @@ def create_reminder(recommendation_id: int, due_at: str, message: str) -> int:
 
 
 def due_reminders() -> list[dict]:
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat()
     with db_cursor() as cur:
         cur.execute("SELECT * FROM reminders WHERE status='open' AND due_at <= ? ORDER BY due_at", (now,))
         rows = cur.fetchall()

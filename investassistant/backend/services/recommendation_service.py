@@ -1,11 +1,11 @@
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from backend.database import db_cursor
 
 
 def create_recommendation(ticker: str, action: str, confidence: float, reasons: list[str], follow_up_days: int = 3) -> int:
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     follow_up = now + timedelta(days=follow_up_days)
     with db_cursor(commit=True) as cur:
         cur.execute(
@@ -13,7 +13,7 @@ def create_recommendation(ticker: str, action: str, confidence: float, reasons: 
             INSERT INTO recommendations(ticker,action,confidence,reasons_json,created_at,follow_up_at,status)
             VALUES(?,?,?,?,?,?, 'open')
             """,
-            (ticker, action, confidence, json.dumps(reasons), now.isoformat() + "Z", follow_up.isoformat() + "Z"),
+            (ticker, action, confidence, json.dumps(reasons), now.isoformat(), follow_up.isoformat()),
         )
         return cur.lastrowid
 

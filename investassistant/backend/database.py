@@ -28,7 +28,8 @@ def db_cursor(commit: bool = False):
 
 
 def init_db() -> None:
-    with get_connection() as conn:
+    conn = get_connection()
+    try:
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS events(
@@ -87,3 +88,5 @@ def init_db() -> None:
             );
             """
         )
+    finally:
+        conn.close()
