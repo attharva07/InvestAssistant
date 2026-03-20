@@ -20,10 +20,13 @@ async def import_robinhood(request: Request, file: UploadFile | None = File(defa
             filename = payload.get("filename")
             if not filename:
                 raise HTTPException(status_code=400, detail="filename is required when upload file is not provided")
-            path = (DATA_DIR / filename).resolve()
-            if DATA_DIR not in path.parents and path != DATA_DIR:
+            # Reject path separators and traversal sequences in the filename itself
+            if "/" in filename or "\\" in filename or ".." in filename:
                 raise HTTPException(status_code=400, detail="Invalid file path")
-            if not path.exists():
+            path = (DATA_DIR / filename).resolve()
+            if not str(path).startswith(str(DATA_DIR.resolve())):
+                raise HTTPException(status_code=400, detail="Invalid file path")
+            if not path.is_file():
                 raise HTTPException(status_code=404, detail=f"File not found: {filename}")
             events, mapping, stats = load_and_parse_csv(str(path))
 

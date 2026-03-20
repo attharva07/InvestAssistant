@@ -19,8 +19,9 @@ def resolve(reminder_id: int, payload: ResolveReminderRequest):
     resolve_reminder(reminder_id, payload.status)
 
     if payload.status == "done" and payload.acted_event:
+        import json
         event = payload.acted_event.model_dump()
-        event["raw_json"] = str(event)
+        event["raw_json"] = json.dumps(event, default=str)
         insert_events([event])
         rebuild_holdings()
     return {"status": payload.status}

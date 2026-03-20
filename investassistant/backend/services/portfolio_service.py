@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 
 from backend.database import db_cursor
 
@@ -17,31 +17,31 @@ def insert_events(events: list[dict]) -> int:
 
 
 def rebuild_holdings() -> int:
-    with db_cursor() as cur:
+    # Use a single cursor/connection for atomicity to prevent race conditions
+    with db_cursor(commit=True) as cur:
         cur.execute("SELECT * FROM events ORDER BY event_ts ASC, id ASC")
         events = cur.fetchall()
 
-    shares = defaultdict(float)
-    avg_cost = defaultdict(float)
+        shares = defaultdict(float)
+        avg_cost = defaultdict(float)
 
-    for e in events:
-        ticker = e["ticker"]
-        if not ticker:
-            continue
-        qty = float(e["quantity"] or 0.0)
-        price = float(e["price"] or 0.0)
-        if e["event_type"] == "BUY" and qty > 0:
-            prev_shares = shares[ticker]
-            new_shares = prev_shares + qty
-            if new_shares <= 0:
+        for e in events:
+            ticker = e["ticker"]
+            if not ticker:
                 continue
-            avg_cost[ticker] = ((prev_shares * avg_cost[ticker]) + (qty * price)) / new_shares
-            shares[ticker] = new_shares
-        elif e["event_type"] == "SELL" and qty > 0:
-            shares[ticker] = max(0.0, shares[ticker] - qty)
+            qty = float(e["quantity"] or 0.0)
+            price = float(e["price"] or 0.0)
+            if e["event_type"] == "BUY" and qty > 0:
+                prev_shares = shares[ticker]
+                new_shares = prev_shares + qty
+                if new_shares <= 0:
+                    continue
+                avg_cost[ticker] = ((prev_shares * avg_cost[ticker]) + (qty * price)) / new_shares
+                shares[ticker] = new_shares
+            elif e["event_type"] == "SELL" and qty > 0:
+                shares[ticker] = max(0.0, shares[ticker] - qty)
 
-    now = datetime.utcnow().isoformat() + "Z"
-    with db_cursor(commit=True) as cur:
+        now = datetime.now(timezone.utc).isoformat()
         cur.execute("DELETE FROM holdings")
         for ticker, qty in shares.items():
             if qty <= 0:
