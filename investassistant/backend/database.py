@@ -86,6 +86,89 @@ def init_db() -> None:
               key TEXT PRIMARY KEY,
               value TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS accounts(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL,
+              account_type TEXT NOT NULL CHECK(account_type IN ('checking','savings')),
+              balance REAL NOT NULL DEFAULT 0.0,
+              institution TEXT,
+              created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS account_transactions(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              account_id INTEGER NOT NULL,
+              amount REAL NOT NULL,
+              description TEXT,
+              transaction_type TEXT NOT NULL CHECK(transaction_type IN ('credit','debit')),
+              transaction_date TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY(account_id) REFERENCES accounts(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS credit_cards(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL,
+              institution TEXT,
+              credit_limit REAL NOT NULL DEFAULT 0.0,
+              current_balance REAL NOT NULL DEFAULT 0.0,
+              due_date TEXT,
+              minimum_payment REAL,
+              created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS card_transactions(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              card_id INTEGER NOT NULL,
+              amount REAL NOT NULL,
+              description TEXT,
+              category TEXT,
+              transaction_date TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY(card_id) REFERENCES credit_cards(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS budgets(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              category TEXT NOT NULL,
+              monthly_limit REAL NOT NULL,
+              month INTEGER NOT NULL,
+              year INTEGER NOT NULL,
+              created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS savings_goals(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL,
+              target_amount REAL NOT NULL,
+              current_amount REAL NOT NULL DEFAULT 0.0,
+              target_date TEXT,
+              description TEXT,
+              created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS alerts(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              alert_type TEXT NOT NULL CHECK(alert_type IN ('price','due_date','budget')),
+              ticker TEXT,
+              reference_id INTEGER,
+              threshold REAL,
+              condition TEXT CHECK(condition IN ('above','below','percent')),
+              message TEXT,
+              is_active INTEGER NOT NULL DEFAULT 1,
+              created_at TEXT NOT NULL,
+              triggered_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS net_worth_log(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              total_assets REAL NOT NULL,
+              total_liabilities REAL NOT NULL,
+              net_worth REAL NOT NULL,
+              snapshot_date TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
             """
         )
     finally:
