@@ -7,6 +7,9 @@ from dotenv import load_dotenv
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./db/investassistant.db")
 
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
 if DATABASE_URL.startswith("sqlite"):
     db_file = DATABASE_URL.replace("sqlite:///", "")
     db_dir = os.path.dirname(db_file)
