@@ -72,38 +72,51 @@ def _parse_transaction_csv(df, db: Session, reconcile: bool) -> dict:
             ticker = str(row.get("instrument", "")).strip().upper()
             if not ticker or ticker == "NAN" or ticker == "":
                 continue
+
             trans_code = str(row.get("trans_code", "")).strip().lower()
-            print(f"DEBUG ticker={ticker} code={trans_code} qty={quantity} price={price}")
-            quantity = row.get("quantity", 0)
-            price = row.get("price", 0)
-            if pd.isna(quantity) or pd.isna(price):
+
+            raw_qty = row.get("quantity", 0)
+            raw_price = row.get("price", 0)
+
+            if pd.isna(raw_qty) or pd.isna(raw_price):
                 continue
-            quantity = abs(float(quantity))
-            price = abs(float(price))
+
+            # Remove commas and dollar signs if present
+            quantity = abs(float(str(raw_qty).replace(",", "").replace("$", "")))
+            price = abs(float(str(raw_price).replace(",", "").replace("$", "")))
+
             if quantity <= 0 or price <= 0:
                 continue
+
             date_str = str(row.get("activity_date", "")).strip()
             try:
                 txn_date = datetime.strptime(date_str, "%m/%d/%Y")
             except Exception:
                 txn_date = datetime.utcnow()
+
             is_buy = any(code in trans_code for code in buy_codes)
             is_sell = any(code in trans_code for code in sell_codes)
+
             if not is_buy and not is_sell:
                 continue
+
             action = "buy" if is_buy else "sell"
+
             if ticker not in holdings_map:
                 holdings_map[ticker] = {"shares": 0.0, "total_cost": 0.0}
+
             if is_buy:
                 holdings_map[ticker]["shares"] += quantity
                 holdings_map[ticker]["total_cost"] += quantity * price
             else:
                 holdings_map[ticker]["shares"] -= quantity
                 holdings_map[ticker]["total_cost"] -= quantity * price
+
             transactions_to_log.append({
                 "ticker": ticker, "action": action, "shares": quantity,
                 "price": price, "amount": round(quantity * price, 2), "date": txn_date
             })
+
         except (ValueError, TypeError):
             continue
 
