@@ -62,8 +62,8 @@ def _parse_holdings_csv(df, db: Session, reconcile: bool) -> dict:
 
 
 def _parse_transaction_csv(df, db: Session, reconcile: bool) -> dict:
-    buy_codes = {"buy", "bto", "bought"}
-    sell_codes = {"sell", "sll", "sto", "sold"}
+    buy_codes = {"buy", "bto", "bought", "Buy"}
+    sell_codes = {"sell", "sll", "sto", "sold", "Sell"}
     holdings_map = {}
     transactions_to_log = []
 
@@ -73,6 +73,7 @@ def _parse_transaction_csv(df, db: Session, reconcile: bool) -> dict:
             if not ticker or ticker == "NAN" or ticker == "":
                 continue
             trans_code = str(row.get("trans_code", "")).strip().lower()
+            print(f"DEBUG ticker={ticker} code={trans_code} qty={quantity} price={price}")
             quantity = row.get("quantity", 0)
             price = row.get("price", 0)
             if pd.isna(quantity) or pd.isna(price):
