@@ -13,25 +13,120 @@ from domains.finance.schemas import (
     FinancialSummary, BudgetOut, SavingsGoalOut, MonthlyReport
 )
 
+# ── CSV Import ────────────────────────────────────────────────────────────────
+
 def parse_and_store_csv(file_bytes: bytes, db: Session, reconcile: bool = False) -> dict:
     from io import BytesIO
-    df = pd.read_csv(BytesIO(file_bytes))
+    try:
+        df = pd.read_csv(BytesIO(file_bytes), on_bad_lines='skip')
+    except Exception:
+        df = pd.read_csv(BytesIO(file_bytes))
     df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
-    required = {"symbol", "quantity", "average_cost"}
-    if not required.issubset(set(df.columns)):
-        raise ValueError(f"CSV missing columns. Found: {list(df.columns)}")
+    is_transaction_format = "instrument" in df.columns and "trans_code" in df.columns
+    is_holdings_format = "symbol" in df.columns and "average_cost" in df.columns
+    if is_transaction_format:
+        return _parse_transaction_csv(df, db, reconcile)
+    elif is_holdings_format:
+        return _parse_holdings_csv(df, db, reconcile)
+    else:
+        raise ValueError(f"Unrecognized CSV format. Columns found: {list(df.columns)}")
+
+
+def _parse_holdings_csv(df, db: Session, reconcile: bool) -> dict:
     imported = 0
     mismatches = []
     for _, row in df.iterrows():
-        ticker = str(row["symbol"]).strip().upper()
-        shares = float(row["quantity"])
-        avg_cost = float(row["average_cost"])
+        try:
+            ticker = str(row["symbol"]).strip().upper()
+            if not ticker or ticker == "NAN":
+                continue
+            shares = float(row["quantity"])
+            avg_cost = float(row["average_cost"])
+            if shares <= 0:
+                continue
+            existing = db.query(Holding).filter(Holding.ticker == ticker).first()
+            if reconcile and existing:
+                if abs(existing.shares - shares) > 0.01:
+                    mismatches.append({"ticker": ticker, "local": round(existing.shares, 4), "csv": round(shares, 4)})
+            if existing:
+                existing.shares = shares
+                existing.avg_cost = avg_cost
+                existing.updated_at = datetime.utcnow()
+            else:
+                db.add(Holding(ticker=ticker, shares=shares, avg_cost=avg_cost))
+            imported += 1
+        except (ValueError, TypeError):
+            continue
+    db.commit()
+    return {"imported": imported, "mismatches": mismatches}
+
+
+def _parse_transaction_csv(df, db: Session, reconcile: bool) -> dict:
+    buy_codes = {"buy", "bto", "bought"}
+    sell_codes = {"sell", "sll", "sto", "sold"}
+    holdings_map = {}
+    transactions_to_log = []
+
+    for _, row in df.iterrows():
+        try:
+            ticker = str(row.get("instrument", "")).strip().upper()
+            if not ticker or ticker == "NAN" or ticker == "":
+                continue
+            trans_code = str(row.get("trans_code", "")).strip().lower()
+            quantity = row.get("quantity", 0)
+            price = row.get("price", 0)
+            if pd.isna(quantity) or pd.isna(price):
+                continue
+            quantity = abs(float(quantity))
+            price = abs(float(price))
+            if quantity <= 0 or price <= 0:
+                continue
+            date_str = str(row.get("activity_date", "")).strip()
+            try:
+                txn_date = datetime.strptime(date_str, "%m/%d/%Y")
+            except Exception:
+                txn_date = datetime.utcnow()
+            is_buy = any(code in trans_code for code in buy_codes)
+            is_sell = any(code in trans_code for code in sell_codes)
+            if not is_buy and not is_sell:
+                continue
+            action = "buy" if is_buy else "sell"
+            if ticker not in holdings_map:
+                holdings_map[ticker] = {"shares": 0.0, "total_cost": 0.0}
+            if is_buy:
+                holdings_map[ticker]["shares"] += quantity
+                holdings_map[ticker]["total_cost"] += quantity * price
+            else:
+                holdings_map[ticker]["shares"] -= quantity
+                holdings_map[ticker]["total_cost"] -= quantity * price
+            transactions_to_log.append({
+                "ticker": ticker, "action": action, "shares": quantity,
+                "price": price, "amount": round(quantity * price, 2), "date": txn_date
+            })
+        except (ValueError, TypeError):
+            continue
+
+    logged = 0
+    for t in transactions_to_log:
+        existing_txn = db.query(Transaction).filter(
+            Transaction.ticker == t["ticker"], Transaction.date == t["date"],
+            Transaction.action == t["action"], Transaction.shares == t["shares"]
+        ).first()
+        if not existing_txn:
+            db.add(Transaction(**t))
+            logged += 1
+
+    imported = 0
+    mismatches = []
+    for ticker, data in holdings_map.items():
+        shares = round(data["shares"], 4)
         if shares <= 0:
             continue
+        avg_cost = round(data["total_cost"] / shares, 2) if shares > 0 else 0
         existing = db.query(Holding).filter(Holding.ticker == ticker).first()
         if reconcile and existing:
             if abs(existing.shares - shares) > 0.01:
-                mismatches.append({"ticker": ticker, "local": existing.shares, "csv": shares})
+                mismatches.append({"ticker": ticker, "local": round(existing.shares, 4), "csv": round(shares, 4)})
         if existing:
             existing.shares = shares
             existing.avg_cost = avg_cost
@@ -39,8 +134,12 @@ def parse_and_store_csv(file_bytes: bytes, db: Session, reconcile: bool = False)
         else:
             db.add(Holding(ticker=ticker, shares=shares, avg_cost=avg_cost))
         imported += 1
+
     db.commit()
-    return {"imported": imported, "mismatches": mismatches}
+    return {"imported": imported, "transactions_logged": logged, "mismatches": mismatches, "format": "robinhood_transactions"}
+
+
+# ── Investments ───────────────────────────────────────────────────────────────
 
 def log_trade(data, db: Session):
     ticker = data.ticker.upper()
@@ -70,11 +169,13 @@ def log_trade(data, db: Session):
     db.refresh(txn)
     return txn
 
+
 def get_transactions(db: Session, ticker: Optional[str] = None):
     q = db.query(Transaction)
     if ticker:
         q = q.filter(Transaction.ticker == ticker.upper())
     return q.order_by(Transaction.date.desc()).all()
+
 
 def fetch_and_cache_prices(tickers: List[str], db: Session) -> dict:
     updated = 0
@@ -95,6 +196,7 @@ def fetch_and_cache_prices(tickers: List[str], db: Session) -> dict:
             continue
     db.commit()
     return {"prices_updated": updated}
+
 
 def get_portfolio_summary(db: Session) -> PortfolioSummary:
     holdings = db.query(Holding).all()
@@ -126,14 +228,114 @@ def get_portfolio_summary(db: Session) -> PortfolioSummary:
         holdings=holding_outs
     )
 
+
+# ── Intelligence ──────────────────────────────────────────────────────────────
+
 def analyze_stock(ticker: str, db: Session) -> StockAnalysis:
     ticker = ticker.upper()
     try:
         stock = yf.Ticker(ticker)
+        info = stock.info
         hist = stock.history(period="1y")
         if hist.empty:
-            raise ValueError(f"No data found for {ticker}")
+            raise ValueError(f"No price data found for {ticker}")
+
         price = round(float(hist["Close"].iloc[-1]), 2)
+
+        pe_ratio = info.get("trailingPE") or info.get("forwardPE")
+        sector = info.get("sector", "Unknown")
+        industry = info.get("industry", "Unknown")
+        sector_pe = {
+            "Technology": 28, "Healthcare": 22, "Financial Services": 14,
+            "Consumer Cyclical": 20, "Consumer Defensive": 20,
+            "Industrials": 18, "Energy": 12, "Utilities": 16,
+            "Real Estate": 30, "Communication Services": 22,
+            "Basic Materials": 15, "Unknown": 20
+        }
+        avg_pe = sector_pe.get(sector, 20)
+        pe_score = 0
+        pe_signal = "No PE data available"
+        if pe_ratio:
+            pe_ratio = round(pe_ratio, 1)
+            if pe_ratio < avg_pe * 0.8:
+                pe_score = 25
+                pe_signal = f"Undervalued — PE {pe_ratio} well below sector avg {avg_pe}"
+            elif pe_ratio < avg_pe:
+                pe_score = 15
+                pe_signal = f"Fairly valued — PE {pe_ratio} below sector avg {avg_pe}"
+            elif pe_ratio < avg_pe * 1.3:
+                pe_score = 5
+                pe_signal = f"Slightly overvalued — PE {pe_ratio} above sector avg {avg_pe}"
+            else:
+                pe_score = -10
+                pe_signal = f"Overvalued — PE {pe_ratio} significantly above sector avg {avg_pe}"
+
+        revenue_growth = info.get("revenueGrowth")
+        rev_score = 0
+        rev_signal = "No revenue growth data"
+        if revenue_growth is not None:
+            revenue_growth_pct = round(revenue_growth * 100, 1)
+            if revenue_growth_pct > 20:
+                rev_score = 20
+                rev_signal = f"Strong revenue growth at +{revenue_growth_pct}% YoY"
+            elif revenue_growth_pct > 10:
+                rev_score = 15
+                rev_signal = f"Solid revenue growth at +{revenue_growth_pct}% YoY"
+            elif revenue_growth_pct > 0:
+                rev_score = 8
+                rev_signal = f"Modest revenue growth at +{revenue_growth_pct}% YoY"
+            else:
+                rev_score = -10
+                rev_signal = f"Revenue declining at {revenue_growth_pct}% YoY — red flag"
+
+        profit_margin = info.get("profitMargins")
+        margin_score = 0
+        margin_signal = "No profit margin data"
+        if profit_margin is not None:
+            margin_pct = round(profit_margin * 100, 1)
+            if margin_pct > 20:
+                margin_score = 20
+                margin_signal = f"Excellent profit margin at {margin_pct}%"
+            elif margin_pct > 10:
+                margin_score = 15
+                margin_signal = f"Healthy profit margin at {margin_pct}%"
+            elif margin_pct > 0:
+                margin_score = 5
+                margin_signal = f"Thin profit margin at {margin_pct}% — watch closely"
+            else:
+                margin_score = -15
+                margin_signal = f"Company is unprofitable — margin at {margin_pct}%"
+
+        debt_to_equity = info.get("debtToEquity")
+        debt_score = 0
+        debt_signal = "No debt data"
+        if debt_to_equity is not None:
+            dte = round(debt_to_equity, 1)
+            if dte < 30:
+                debt_score = 15
+                debt_signal = f"Very low debt — D/E ratio {dte}% (financially strong)"
+            elif dte < 80:
+                debt_score = 10
+                debt_signal = f"Manageable debt — D/E ratio {dte}%"
+            elif dte < 150:
+                debt_score = 0
+                debt_signal = f"Moderate debt — D/E ratio {dte}% (monitor)"
+            else:
+                debt_score = -10
+                debt_signal = f"High debt — D/E ratio {dte}% (risky for long term)"
+
+        fcf = info.get("freeCashflow")
+        fcf_score = 0
+        fcf_signal = "No free cash flow data"
+        if fcf is not None:
+            fcf_b = round(fcf / 1e9, 2)
+            if fcf > 0:
+                fcf_score = 15
+                fcf_signal = f"Positive free cash flow at ${fcf_b}B — company generates real cash"
+            else:
+                fcf_score = -10
+                fcf_signal = f"Negative free cash flow at ${fcf_b}B — burning cash"
+
         delta = hist["Close"].diff()
         gain = delta.clip(lower=0).rolling(14).mean()
         loss = (-delta.clip(upper=0)).rolling(14).mean()
@@ -144,41 +346,75 @@ def analyze_stock(ticker: str, db: Session) -> StockAnalysis:
         avg_vol = float(hist["Volume"].rolling(20).mean().iloc[-2])
         curr_vol = float(hist["Volume"].iloc[-1])
         vol_change = round(((curr_vol - avg_vol) / avg_vol) * 100, 1) if avg_vol > 0 else 0.0
-        sentiment_score = 50.0
-        try:
-            news = stock.news or []
-            if news:
-                sentiment_score = min(100, max(0, 50 + (len(news) * 2)))
-        except Exception:
-            pass
-        score = 50
-        if rsi < 30: score += 15
-        elif rsi > 70: score -= 15
-        elif rsi < 45: score += 7
-        if ma50 > ma200: score += 15
-        else: score -= 10
-        if vol_change > 20: score += 10
-        if sentiment_score > 60: score += 10
-        elif sentiment_score < 40: score -= 10
-        score = max(0, min(100, score))
-        outlook = "Bullish" if score >= 65 else "Bearish" if score < 45 else "Neutral"
-        rsi_text = "oversold — historically a buying opportunity" if rsi < 30 else "overbought — potential pullback ahead" if rsi > 70 else "in neutral territory"
-        ma_text = "bullish golden cross — upward momentum" if ma50 > ma200 else "bearish death cross — downward pressure"
-        vol_text = f"elevated at +{vol_change}%, suggesting strong market interest" if vol_change > 20 else "within normal range"
+
+        tech_score = 0
+        tech_signal = ""
+        if ma50 > ma200:
+            tech_score += 5
+            tech_signal = "Price trend is upward (50-day MA above 200-day MA)"
+        else:
+            tech_score -= 5
+            tech_signal = "Price trend is downward (50-day MA below 200-day MA)"
+        if rsi < 40:
+            tech_score += 5
+            tech_signal += f", RSI {rsi} suggests a potential buying opportunity"
+        elif rsi > 70:
+            tech_score -= 5
+            tech_signal += f", RSI {rsi} suggests stock may be overbought short-term"
+
+        beta = info.get("beta")
+        macro_signal = ""
+        if beta is not None:
+            beta = round(beta, 2)
+            if beta > 1.5:
+                macro_signal = f"High beta ({beta}) — moves aggressively with market. Volatile in downturns."
+            elif beta > 1.0:
+                macro_signal = f"Beta {beta} — moderately sensitive to market swings."
+            else:
+                macro_signal = f"Low beta ({beta}) — relatively stable, less affected by market volatility."
+
+        raw_score = 50 + pe_score + rev_score + margin_score + debt_score + fcf_score + tech_score
+        score = max(0, min(100, raw_score))
+        if score >= 70:
+            outlook = "Strong Buy"
+        elif score >= 55:
+            outlook = "Buy"
+        elif score >= 45:
+            outlook = "Hold"
+        elif score >= 35:
+            outlook = "Caution"
+        else:
+            outlook = "Avoid"
+
+        company_name = info.get("longName", ticker)
         reasoning = (
-            f"{ticker} scores {score}/100. RSI at {rsi} is {rsi_text}. "
-            f"The 50-day MA (${ma50}) is {'above' if ma50 > ma200 else 'below'} the 200-day MA (${ma200}), "
-            f"indicating a {ma_text}. Volume is {vol_text}. "
-            f"This is signal-based analysis — not a price prediction. Always do your own research."
+            f"{company_name} ({ticker}) scores {score}/100 for long-term investing. "
+            f"Valuation: {pe_signal}. "
+            f"Growth: {rev_signal}. "
+            f"Profitability: {margin_signal}. "
+            f"Financial health: {debt_signal}. "
+            f"Cash generation: {fcf_signal}. "
+            f"Entry timing: {tech_signal}. "
         )
+        if macro_signal:
+            reasoning += f"Market sensitivity: {macro_signal} "
+        reasoning += (
+            f"Sector: {sector} ({industry}). "
+            f"This is a long-term fundamental analysis. "
+            f"Always do your own research before investing."
+        )
+
         return StockAnalysis(
             ticker=ticker, price=price, score=score, outlook=outlook,
             rsi=rsi, ma50=ma50, ma200=ma200,
-            volume_change_pct=vol_change, sentiment_score=sentiment_score,
+            volume_change_pct=vol_change, sentiment_score=50.0,
             reasoning=reasoning
         )
     except Exception as e:
         raise ValueError(f"Analysis failed for {ticker}: {str(e)}")
+
+
+# ── Accounts ──────────────────────────────────────────────────────────────────
 
 def create_account(data, db: Session):
     acc = Account(name=data.name, account_type=data.account_type,
@@ -186,8 +422,10 @@ def create_account(data, db: Session):
     db.add(acc); db.commit(); db.refresh(acc)
     return acc
 
+
 def get_accounts(db: Session):
     return db.query(Account).all()
+
 
 def add_account_transaction(data, db: Session):
     acc = db.query(Account).filter(Account.id == data.account_id).first()
@@ -202,10 +440,14 @@ def add_account_transaction(data, db: Session):
     db.add(txn); db.commit(); db.refresh(txn)
     return txn
 
+
 def get_account_transactions(account_id: int, db: Session):
     return db.query(AccountTransaction).filter(
         AccountTransaction.account_id == account_id).order_by(
         AccountTransaction.date.desc()).all()
+
+
+# ── Credit Cards ──────────────────────────────────────────────────────────────
 
 def create_credit_card(data, db: Session):
     card = CreditCard(name=data.name, balance=data.balance,
@@ -214,8 +456,10 @@ def create_credit_card(data, db: Session):
     db.add(card); db.commit(); db.refresh(card)
     return card
 
+
 def get_credit_cards(db: Session):
     return db.query(CreditCard).all()
+
 
 def add_card_transaction(data, db: Session):
     card = db.query(CreditCard).filter(CreditCard.id == data.card_id).first()
@@ -227,10 +471,14 @@ def add_card_transaction(data, db: Session):
     db.add(txn); db.commit(); db.refresh(txn)
     return txn
 
+
 def get_card_transactions(card_id: int, db: Session):
     return db.query(CardTransaction).filter(
         CardTransaction.card_id == card_id).order_by(
         CardTransaction.date.desc()).all()
+
+
+# ── Budget ────────────────────────────────────────────────────────────────────
 
 def create_budget(data, db: Session):
     existing = db.query(Budget).filter(Budget.category == data.category).first()
@@ -241,6 +489,7 @@ def create_budget(data, db: Session):
     b = Budget(category=data.category, monthly_limit=data.monthly_limit)
     db.add(b); db.commit(); db.refresh(b)
     return b
+
 
 def get_budgets_with_spending(db: Session) -> List[BudgetOut]:
     budgets = db.query(Budget).all()
@@ -260,11 +509,15 @@ def get_budgets_with_spending(db: Session) -> List[BudgetOut]:
         ))
     return result
 
+
+# ── Savings Goals ─────────────────────────────────────────────────────────────
+
 def create_savings_goal(data, db: Session):
     g = SavingsGoal(name=data.name, target_amount=data.target_amount,
                     current_amount=data.current_amount, target_date=data.target_date)
     db.add(g); db.commit(); db.refresh(g)
     return g
+
 
 def get_savings_goals(db: Session) -> List[SavingsGoalOut]:
     goals = db.query(SavingsGoal).all()
@@ -274,6 +527,7 @@ def get_savings_goals(db: Session) -> List[SavingsGoalOut]:
         completed=g.completed,
         progress_pct=round((g.current_amount / g.target_amount) * 100, 1) if g.target_amount > 0 else 0.0
     ) for g in goals]
+
 
 def update_savings_goal_progress(goal_id: int, amount: float, db: Session):
     g = db.query(SavingsGoal).filter(SavingsGoal.id == goal_id).first()
@@ -285,6 +539,9 @@ def update_savings_goal_progress(goal_id: int, amount: float, db: Session):
     db.commit(); db.refresh(g)
     return g
 
+
+# ── Alerts ────────────────────────────────────────────────────────────────────
+
 def create_alert(data, db: Session):
     a = Alert(alert_type=data.alert_type,
               ticker=data.ticker.upper() if data.ticker else None,
@@ -292,8 +549,10 @@ def create_alert(data, db: Session):
     db.add(a); db.commit(); db.refresh(a)
     return a
 
+
 def get_alerts(db: Session):
     return db.query(Alert).order_by(Alert.created_at.desc()).all()
+
 
 def check_and_trigger_alerts(db: Session) -> dict:
     alerts = db.query(Alert).filter(Alert.triggered == False).all()
@@ -320,6 +579,9 @@ def check_and_trigger_alerts(db: Session) -> dict:
     db.commit()
     return {"triggered": triggered_count}
 
+
+# ── Net Worth & Summary ───────────────────────────────────────────────────────
+
 def get_net_worth(db: Session) -> NetWorthSummary:
     portfolio = get_portfolio_summary(db)
     investment_value = portfolio.current_value
@@ -339,6 +601,7 @@ def get_net_worth(db: Session) -> NetWorthSummary:
         total_assets=total_assets, total_liabilities=total_liabilities, net_worth=net_worth
     )
 
+
 def get_financial_summary(db: Session) -> FinancialSummary:
     net_worth = get_net_worth(db)
     budgets = get_budgets_with_spending(db)
@@ -357,6 +620,7 @@ def get_financial_summary(db: Session) -> FinancialSummary:
         net_worth=net_worth, monthly_cashflow=monthly_cashflow,
         budget_status=budgets, active_alerts=active_alerts, savings_goals=goals
     )
+
 
 def get_monthly_report(db: Session, month: Optional[int] = None, year: Optional[int] = None) -> MonthlyReport:
     now = datetime.utcnow()
