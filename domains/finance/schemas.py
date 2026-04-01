@@ -189,3 +189,23 @@ class MonthlyReport(BaseModel):
     portfolio_gain_loss: float
     net_worth_change: float
     savings_progress: List[SavingsGoalOut]
+
+class TransferCreate(BaseModel):
+    transfer_type: str  # "account_to_account" or "account_to_card"
+    from_account_id: int
+    to_account_id: Optional[int] = None
+    to_card_id: Optional[int] = None
+    amount: float
+    note: Optional[str] = None
+
+class TransferOut(BaseModel):
+    id: int
+    transfer_type: str
+    from_account_id: int
+    to_account_id: Optional[int] = None
+    to_card_id: Optional[int] = None
+    amount: float
+    note: Optional[str] = None
+    date: datetime
+    class Config:
+        from_attributes = True

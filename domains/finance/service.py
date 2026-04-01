@@ -12,6 +12,10 @@ from domains.finance.schemas import (
     HoldingOut, PortfolioSummary, StockAnalysis, NetWorthSummary,
     FinancialSummary, BudgetOut, SavingsGoalOut, MonthlyReport
 )
+from domains.finance.models import (
+    Holding, Transaction, PriceCache, Account, AccountTransaction,
+    CreditCard, CardTransaction, Budget, SavingsGoal, Alert, NetWorthLog, Transfer
+)
 
 # ── CSV Import ────────────────────────────────────────────────────────────────
 
@@ -609,6 +613,67 @@ def check_and_trigger_alerts(db: Session) -> dict:
     return {"triggered": triggered_count}
 
 
+def create_transfer(data, db: Session):
+    from_acc = db.query(Account).filter(Account.id == data.from_account_id).first()
+    if not from_acc:
+        raise ValueError("Source account not found")
+    if from_acc.balance < data.amount:
+        raise ValueError(f"Insufficient balance — account has {round(from_acc.balance, 2)}, transfer needs {data.amount}")
+
+    if data.transfer_type == "account_to_account":
+        to_acc = db.query(Account).filter(Account.id == data.to_account_id).first()
+        if not to_acc:
+            raise ValueError("Destination account not found")
+
+        # Debit source
+        from_acc.balance = round(from_acc.balance - data.amount, 2)
+        db.add(AccountTransaction(
+            account_id=from_acc.id, action="withdrawal",
+            amount=data.amount, note=f"Transfer to {to_acc.name}: {data.note or ''}"
+        ))
+
+        # Credit destination
+        to_acc.balance = round(to_acc.balance + data.amount, 2)
+        db.add(AccountTransaction(
+            account_id=to_acc.id, action="deposit",
+            amount=data.amount, note=f"Transfer from {from_acc.name}: {data.note or ''}"
+        ))
+
+    elif data.transfer_type == "account_to_card":
+        card = db.query(CreditCard).filter(CreditCard.id == data.to_card_id).first()
+        if not card:
+            raise ValueError("Card not found")
+
+        # Debit source account
+        from_acc.balance = round(from_acc.balance - data.amount, 2)
+        db.add(AccountTransaction(
+            account_id=from_acc.id, action="withdrawal",
+            amount=data.amount, note=f"Card payment to {card.name}: {data.note or ''}"
+        ))
+
+        # Reduce card balance (payment reduces what you owe)
+        card.balance = round(max(0, card.balance - data.amount), 2)
+
+    else:
+        raise ValueError("Invalid transfer type")
+
+    # Log the transfer record
+    transfer = Transfer(
+        transfer_type=data.transfer_type,
+        from_account_id=data.from_account_id,
+        to_account_id=data.to_account_id,
+        to_card_id=data.to_card_id,
+        amount=data.amount,
+        note=data.note
+    )
+    db.add(transfer)
+    db.commit()
+    db.refresh(transfer)
+    return transfer
+
+
+def get_transfers(db: Session):
+    return db.query(Transfer).order_by(Transfer.date.desc()).all()
 # ── Net Worth & Summary ───────────────────────────────────────────────────────
 
 def get_net_worth(db: Session) -> NetWorthSummary:

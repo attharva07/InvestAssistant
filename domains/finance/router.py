@@ -9,7 +9,7 @@ from domains.finance.schemas import (
     AccountTransactionCreate, AccountTransactionOut, CreditCardCreate, CreditCardOut,
     CardTransactionCreate, CardTransactionOut, BudgetCreate, BudgetOut,
     SavingsGoalCreate, SavingsGoalOut, StockAnalysis, FinancialSummary,
-    NetWorthSummary, TradeCreate, TransactionOut, MonthlyReport
+    NetWorthSummary, TradeCreate, TransactionOut, MonthlyReport, TransferCreate, TransferOut
 )
 
 router = APIRouter(prefix="/finance", tags=["Finance"])
@@ -129,3 +129,14 @@ def get_summary(db: Session = Depends(get_db)):
 @router.get("/report", response_model=MonthlyReport)
 def get_report(month: Optional[int] = None, year: Optional[int] = None, db: Session = Depends(get_db)):
     return service.get_monthly_report(db, month, year)
+
+@router.post("/transfer", response_model=TransferOut)
+def create_transfer(data: TransferCreate, db: Session = Depends(get_db)):
+    try:
+        return service.create_transfer(data, db)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/transfers", response_model=List[TransferOut])
+def get_transfers(db: Session = Depends(get_db)):
+    return service.get_transfers(db)

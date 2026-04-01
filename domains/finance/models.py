@@ -104,3 +104,14 @@ class NetWorthLog(Base):
     total_liabilities = Column(Float, nullable=False)
     net_worth = Column(Float, nullable=False)
     logged_at = Column(DateTime, default=datetime.utcnow)
+
+class Transfer(Base):
+    __tablename__ = "transfers"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    transfer_type = Column(String, nullable=False)  # "account_to_account" or "account_to_card"
+    from_account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True)
+    to_account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True)
+    to_card_id = Column(Integer, ForeignKey("credit_cards.id"), nullable=True)
+    amount = Column(Float, nullable=False)
+    note = Column(Text, nullable=True)
+    date = Column(DateTime, default=datetime.utcnow)
