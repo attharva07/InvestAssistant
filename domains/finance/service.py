@@ -249,6 +249,21 @@ def analyze_stock(ticker: str, db: Session) -> StockAnalysis:
     ticker = ticker.upper()
     try:
         stock = yf.Ticker(ticker)
+
+        # Rate limit protection — add small delay
+        import time
+        time.sleep(0.5)
+
+        hist = stock.history(period="1y")
+        if hist.empty:
+            raise ValueError(f"No data found for {ticker}")
+
+        # Use fast_info for basic price to avoid extra requests
+        try:
+            info = stock.info
+        except Exception:
+            info = {}
+
         info = stock.info
         hist = stock.history(period="1y")
         if hist.empty:
