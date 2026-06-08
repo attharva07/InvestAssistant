@@ -1,6 +1,7 @@
 import pandas as pd
 import yfinance as yf
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from datetime import datetime
 from typing import List, Optional
 
@@ -258,20 +259,10 @@ def analyze_stock(ticker: str, db: Session) -> StockAnalysis:
         import time
         time.sleep(0.5)
 
-        hist = stock.history(period="1y")
-        if hist.empty:
-            raise ValueError(f"No data found for {ticker}")
-
-        # Use fast_info for basic price to avoid extra requests
-        try:
-            info = stock.info
-        except Exception:
-            info = {}
-
         info = stock.info
         hist = stock.history(period="1y")
         if hist.empty:
-            raise ValueError(f"No price data found for {ticker}")
+            raise ValueError(f"No data found for {ticker}")
 
         price = round(float(hist["Close"].iloc[-1]), 2)
 
@@ -437,10 +428,31 @@ def analyze_stock(ticker: str, db: Session) -> StockAnalysis:
             f"Always do your own research before investing."
         )
 
+        import nltk
+        nltk.download('vader_lexicon', quiet=True)
+        from nltk.sentiment.vader import SentimentIntensityAnalyzer
+        sia = SentimentIntensityAnalyzer()
+        try:
+            news_items = stock.news or []
+            headlines = []
+            for item in news_items:
+                title = item.get("title") or (item.get("content") or {}).get("title") or ""
+                if title:
+                    headlines.append(str(title))
+        except Exception:
+            headlines = []
+
+        if headlines:
+            scores = [sia.polarity_scores(h)["compound"] for h in headlines]
+            avg_compound = sum(scores) / len(scores)
+            sentiment_score = round(max(0.0, min(100.0, 50 + avg_compound * 50)), 1)
+        else:
+            sentiment_score = 50.0
+
         return StockAnalysis(
             ticker=ticker, price=price, score=score, outlook=outlook,
             rsi=rsi, ma50=ma50, ma200=ma200,
-            volume_change_pct=vol_change, sentiment_score=50.0,
+            volume_change_pct=vol_change, sentiment_score=sentiment_score,
             reasoning=reasoning
         )
     except Exception as e:
@@ -526,16 +538,18 @@ def create_budget(data, db: Session):
 
 def get_budgets_with_spending(db: Session) -> List[BudgetOut]:
     budgets = db.query(Budget).all()
-    result = []
     now = datetime.utcnow()
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    spending_rows = (
+        db.query(CardTransaction.category, func.sum(CardTransaction.amount).label("total"))
+        .filter(CardTransaction.date >= month_start)
+        .group_by(CardTransaction.category)
+        .all()
+    )
+    spending_map = {row.category: round(row.total, 2) for row in spending_rows}
+    result = []
     for b in budgets:
-        spent = sum(
-            t.amount for t in db.query(CardTransaction)
-            .filter(CardTransaction.category == b.category,
-                    CardTransaction.date >= month_start).all()
-        )
-        spent = round(spent, 2)
+        spent = spending_map.get(b.category, 0.0)
         result.append(BudgetOut(
             id=b.id, category=b.category, monthly_limit=b.monthly_limit,
             spent=spent, remaining=round(b.monthly_limit - spent, 2)
@@ -674,9 +688,65 @@ def create_transfer(data, db: Session):
 
 def get_transfers(db: Session):
     return db.query(Transfer).order_by(Transfer.date.desc()).all()
+
+
+# ── Delete helpers ────────────────────────────────────────────────────────────
+
+def delete_holding(ticker: str, db: Session) -> bool:
+    obj = db.query(Holding).filter(Holding.ticker == ticker.upper()).first()
+    if not obj:
+        return False
+    db.delete(obj)
+    db.commit()
+    return True
+
+
+def delete_account(account_id: int, db: Session) -> bool:
+    obj = db.query(Account).filter(Account.id == account_id).first()
+    if not obj:
+        return False
+    db.delete(obj)
+    db.commit()
+    return True
+
+
+def delete_credit_card(card_id: int, db: Session) -> bool:
+    obj = db.query(CreditCard).filter(CreditCard.id == card_id).first()
+    if not obj:
+        return False
+    db.delete(obj)
+    db.commit()
+    return True
+
+
+def delete_budget(category: str, db: Session) -> bool:
+    obj = db.query(Budget).filter(Budget.category == category).first()
+    if not obj:
+        return False
+    db.delete(obj)
+    db.commit()
+    return True
+
+
+def delete_savings_goal(goal_id: int, db: Session) -> bool:
+    obj = db.query(SavingsGoal).filter(SavingsGoal.id == goal_id).first()
+    if not obj:
+        return False
+    db.delete(obj)
+    db.commit()
+    return True
+
+
+def delete_alert(alert_id: int, db: Session) -> bool:
+    obj = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not obj:
+        return False
+    db.delete(obj)
+    db.commit()
+    return True
 # ── Net Worth & Summary ───────────────────────────────────────────────────────
 
-def get_net_worth(db: Session) -> NetWorthSummary:
+def _compute_net_worth(db: Session) -> NetWorthSummary:
     portfolio = get_portfolio_summary(db)
     investment_value = portfolio.current_value
     accounts = db.query(Account).all()
@@ -687,8 +757,6 @@ def get_net_worth(db: Session) -> NetWorthSummary:
     total_assets = round(investment_value + savings_total + checking_total, 2)
     total_liabilities = credit_card_debt
     net_worth = round(total_assets - total_liabilities, 2)
-    log = NetWorthLog(total_assets=total_assets, total_liabilities=total_liabilities, net_worth=net_worth)
-    db.add(log); db.commit()
     return NetWorthSummary(
         investment_value=investment_value, savings_total=savings_total,
         checking_total=checking_total, credit_card_debt=credit_card_debt,
@@ -696,8 +764,20 @@ def get_net_worth(db: Session) -> NetWorthSummary:
     )
 
 
+def log_net_worth_snapshot(db: Session) -> NetWorthSummary:
+    summary = _compute_net_worth(db)
+    log = NetWorthLog(
+        total_assets=summary.total_assets,
+        total_liabilities=summary.total_liabilities,
+        net_worth=summary.net_worth
+    )
+    db.add(log)
+    db.commit()
+    return summary
+
+
 def get_financial_summary(db: Session) -> FinancialSummary:
-    net_worth = get_net_worth(db)
+    net_worth = _compute_net_worth(db)
     budgets = get_budgets_with_spending(db)
     goals = get_savings_goals(db)
     active_alerts = db.query(Alert).filter(Alert.triggered == False).count()

@@ -120,7 +120,11 @@ def check_alerts(db: Session = Depends(get_db)):
 
 @router.get("/net-worth", response_model=NetWorthSummary)
 def get_net_worth(db: Session = Depends(get_db)):
-    return service.get_net_worth(db)
+    return service._compute_net_worth(db)
+
+@router.post("/net-worth/snapshot", response_model=NetWorthSummary)
+def snapshot_net_worth(db: Session = Depends(get_db)):
+    return service.log_net_worth_snapshot(db)
 
 @router.get("/summary", response_model=FinancialSummary)
 def get_summary(db: Session = Depends(get_db)):
@@ -140,3 +144,39 @@ def create_transfer(data: TransferCreate, db: Session = Depends(get_db)):
 @router.get("/transfers", response_model=List[TransferOut])
 def get_transfers(db: Session = Depends(get_db)):
     return service.get_transfers(db)
+
+@router.delete("/holdings/{ticker}")
+def delete_holding(ticker: str, db: Session = Depends(get_db)):
+    if not service.delete_holding(ticker, db):
+        raise HTTPException(status_code=404, detail="Holding not found")
+    return {"deleted": True}
+
+@router.delete("/accounts/{account_id}")
+def delete_account(account_id: int, db: Session = Depends(get_db)):
+    if not service.delete_account(account_id, db):
+        raise HTTPException(status_code=404, detail="Account not found")
+    return {"deleted": True}
+
+@router.delete("/cards/{card_id}")
+def delete_card(card_id: int, db: Session = Depends(get_db)):
+    if not service.delete_credit_card(card_id, db):
+        raise HTTPException(status_code=404, detail="Card not found")
+    return {"deleted": True}
+
+@router.delete("/budgets/{category}")
+def delete_budget(category: str, db: Session = Depends(get_db)):
+    if not service.delete_budget(category, db):
+        raise HTTPException(status_code=404, detail="Budget not found")
+    return {"deleted": True}
+
+@router.delete("/goals/{goal_id}")
+def delete_goal(goal_id: int, db: Session = Depends(get_db)):
+    if not service.delete_savings_goal(goal_id, db):
+        raise HTTPException(status_code=404, detail="Goal not found")
+    return {"deleted": True}
+
+@router.delete("/alerts/{alert_id}")
+def delete_alert(alert_id: int, db: Session = Depends(get_db)):
+    if not service.delete_alert(alert_id, db):
+        raise HTTPException(status_code=404, detail="Alert not found")
+    return {"deleted": True}
